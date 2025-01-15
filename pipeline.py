@@ -9,7 +9,6 @@ from nltk.stem import WordNetLemmatizer
 from nltk.corpus import stopwords
 from PyPDF2 import PdfReader
 import pathway as pw
-from sentence_transformers import SentenceTransformer, util
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
