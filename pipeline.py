@@ -38,6 +38,8 @@ GEMINI_API_KEY="AIzaSyBsjjQRqoo40I6pxLHJ4zpukOt5e1lg8C0"
 # Environment setup
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 nltk.download('stopwords')
+nltk.download('wordnet')
+nltk.download('omw-1.4')
 exclude = string.punctuation
 lemmatizer = WordNetLemmatizer()
 
