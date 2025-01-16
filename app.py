@@ -40,9 +40,9 @@ logging.basicConfig(level=logging.WARNING)
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# Ensure the directory for NLTK data exists
 nltk_data_path = os.path.expanduser('~/nltk_data')
-if not os.path.exists(nltk_data_path):
-    os.makedirs(nltk_data_path)
+os.makedirs(nltk_data_path, exist_ok=True)
 
 # Set the custom download directory
 nltk.data.path.append(nltk_data_path)
