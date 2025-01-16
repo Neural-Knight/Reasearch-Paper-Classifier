@@ -42,11 +42,42 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 nltk_data_path = os.path.expanduser('~/nltk_data')
 if not os.path.exists(nltk_data_path):
-    nltk.download('stopwords')
-    nltk.download('wordnet')
-    nltk.download('omw-1.4')
-exclude = string.punctuation
+    os.makedirs(nltk_data_path)
+
+# Set the custom download directory
+nltk.data.path.append(nltk_data_path)
+
+# Download required NLTK data
+def download_nltk_data():
+    try:
+        from nltk.corpus import wordnet
+        # Check if WordNet is already downloaded
+        wordnet.ensure_loaded()
+    except LookupError:
+        # If not downloaded, download required data
+        nltk.download('wordnet', download_dir=nltk_data_path)
+        nltk.download('omw-1.4', download_dir=nltk_data_path)
+        nltk.download('stopwords', download_dir=nltk_data_path)
+        
+# Initialize NLTK data
+download_nltk_data()
+
+# Modified lemmatizer initialization
 lemmatizer = WordNetLemmatizer()
+
+def lemmatize_words(text):
+    words = text.split()
+    lemmatized_words = []
+    for word in words:
+        try:
+            lemmatized_word = lemmatizer.lemmatize(word)
+            lemmatized_words.append(lemmatized_word)
+        except Exception as e:
+            # Fallback to original word if lemmatization fails
+            lemmatized_words.append(word)
+    return " ".join(lemmatized_words)
+
+exclude = string.punctuation
 
 # Function Definitions (Text extraction, cleaning, etc.)
 def text_extractor_from_pdf(pdf_path):
@@ -56,8 +87,8 @@ def text_extractor_from_pdf(pdf_path):
         text += page.extract_text()
     return text
 
-def lemmatize_words(text):
-    return " ".join([lemmatizer.lemmatize(word) for word in text.split()])
+# def lemmatize_words(text):
+#     return " ".join([lemmatizer.lemmatize(word) for word in text.split()])
 
 def remove_stopwords(text):
     new_text = []
