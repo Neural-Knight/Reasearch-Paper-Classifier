@@ -143,61 +143,81 @@ conference_folders = {
     "TMLR": r"Reference/Publishable/TMLR"
 }
 class VectorStoreManager:
-    def __init__(self):
-        self.server = None
-        self.client = None
-        self.server_thread = None
-        self.is_running = False
-        self.setup_vector_store()
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(VectorStoreManager, cls).__new__(cls)
+            cls._instance.server = None
+            cls._instance.client = None
+            cls._instance.server_thread = None
+            cls._instance.is_running = False
+            cls._instance.setup_vector_store()
+        return cls._instance
 
     def setup_vector_store(self):
-        text_splitter = TokenCountSplitter()
-        embedder = GeminiEmbedder(api_key=GEMINI_API_KEY)
-        parser = ParseUnstructured(mode='single', post_processors=[preprocessed_text])
+        if not self.is_running:
+            text_splitter = TokenCountSplitter()
+            embedder = GeminiEmbedder(api_key=GEMINI_API_KEY)
+            parser = ParseUnstructured(mode='single', post_processors=[preprocessed_text])
 
-        reference_sources = []
-        for conference_name, folder_path in conference_folders.items():
-            table = pw.io.fs.read(
-                path=folder_path + "/*.pdf",
-                format="binary",
-                with_metadata=True,
-                mode="static",
+            reference_sources = []
+            for conference_name, folder_path in conference_folders.items():
+                table = pw.io.fs.read(
+                    path=folder_path + "/*.pdf",
+                    format="binary",
+                    with_metadata=True,
+                    mode="static",
+                )
+                reference_sources.append(table)
+
+            self.server = VectorStoreServer(
+                *reference_sources,
+                parser=parser,
+                embedder=embedder,
+                splitter=text_splitter,
             )
-            reference_sources.append(table)
-
-        self.server = VectorStoreServer(
-            *reference_sources,
-            parser=parser,
-            embedder=embedder,
-            splitter=text_splitter,
-        )
 
     def start_server(self):
         if not self.is_running:
-            self.server_thread = threading.Thread(target=self._run_server)
-            self.server_thread.daemon = True
-            self.server_thread.start()
-            time.sleep(2)  # Wait for server to start
-            self.client = VectorStoreClient(host="127.0.0.1", port=8000, timeout=30)
-            self.is_running = True
+            try:
+                self.server_thread = threading.Thread(target=self._run_server)
+                self.server_thread.daemon = True
+                self.server_thread.start()
+                time.sleep(2)  # Wait for server to start
+                self.client = VectorStoreClient(host="127.0.0.1", port=8000, timeout=30)
+                self.is_running = True
+            except Exception as e:
+                st.error(f"Error starting server: {str(e)}")
+                self.is_running = False
 
     def _run_server(self):
-        self.server.run_server(host="127.0.0.1", port=8000)
+        try:
+            self.server.run_server(host="127.0.0.1", port=8000)
+        except OSError as e:
+            if e.errno == 98:  # Address already in use
+                st.warning("Server is already running")
+                self.is_running = True
+            else:
+                raise e
 
     def restart_server(self):
-        self.is_running = False
-        time.sleep(1)
-        self.setup_vector_store()
-        self.start_server()
+        if self.is_running:
+            self.is_running = False
+            time.sleep(1)
+            self.setup_vector_store()
+            self.start_server()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def query(self, text):
+        if not self.is_running:
+            self.start_server()
         try:
             return self.client.query(query=[text], k=1)
         except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
             self.restart_server()
             return self.client.query(query=[text], k=1)
-
+        
 # Initialize vector store manager
 vector_store_manager = VectorStoreManager()
 vector_store_manager.start_server()
