@@ -20,6 +20,10 @@ from sklearn.model_selection import cross_val_score
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.svm import SVC
 from sklearn.ensemble import VotingClassifier
+from pathway.xpacks.llm.embedders import GeminiEmbedder
+from pathway.xpacks.llm.splitters import TokenCountSplitter
+from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
+from pathway.xpacks.llm.parsers import ParseUnstructured
 import time
 import requests
 import google.generativeai as genai
@@ -28,56 +32,27 @@ from google.api_core import retry
 import threading
 import logging
 import warnings
-import socket
-from dotenv import load_dotenv
-import os
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 # Suppress logs from specific libraries
 logging.getLogger('pathway_engine').setLevel(logging.WARNING)
 logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
 logging.getLogger('root').setLevel(logging.WARNING)
 logging.getLogger('requests').setLevel(logging.WARNING)
 logging.basicConfig(level=logging.WARNING)
-load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Ensure the directory for NLTK data exists
+GEMINI_API_KEY = "AIzaSyBsjjQRqoo40I6pxLHJ4zpukOt5e1lg8C0"
+
+# Environment setup
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 nltk_data_path = os.path.expanduser('~/nltk_data')
-os.makedirs(nltk_data_path, exist_ok=True)
-
-# Set the custom download directory
-nltk.data.path.append(nltk_data_path)
-
-# Download required NLTK data
-def download_nltk_data():
-    try:
-        from nltk.corpus import wordnet
-        # Check if WordNet is already downloaded
-        wordnet.ensure_loaded()
-    except LookupError:
-        # If not downloaded, download required data
-        nltk.download('wordnet', download_dir=nltk_data_path)
-        nltk.download('omw-1.4', download_dir=nltk_data_path)
-        nltk.download('stopwords', download_dir=nltk_data_path)
-        
-# Initialize NLTK data
-download_nltk_data()
-
-# Modified lemmatizer initialization
+if not os.path.exists(nltk_data_path):
+    nltk.download('stopwords')
+    nltk.download('wordnet')
+    nltk.download('omw-1.4')
+exclude = string.punctuation
 lemmatizer = WordNetLemmatizer()
 
-def lemmatize_words(text):
-    words = text.split()
-    lemmatized_words = []
-    for word in words:
-        try:
-            lemmatized_word = lemmatizer.lemmatize(word)
-            lemmatized_words.append(lemmatized_word)
-        except Exception as e:
-            # Fallback to original word if lemmatization fails
-            lemmatized_words.append(word)
-    return " ".join(lemmatized_words)
-
-exclude = string.punctuation
 
 # Function Definitions (Text extraction, cleaning, etc.)
 def text_extractor_from_pdf(pdf_path):
@@ -87,8 +62,8 @@ def text_extractor_from_pdf(pdf_path):
         text += page.extract_text()
     return text
 
-# def lemmatize_words(text):
-#     return " ".join([lemmatizer.lemmatize(word) for word in text.split()])
+def lemmatize_words(text):
+    return " ".join([lemmatizer.lemmatize(word) for word in text.split()])
 
 def remove_stopwords(text):
     new_text = []
@@ -167,30 +142,15 @@ conference_folders = {
     "NeurIPS": r"Reference/Publishable/NeurIPS",
     "TMLR": r"Reference/Publishable/TMLR"
 }
-# Initialize session state for server management
-if 'server_initialized' not in st.session_state:
-    st.session_state.server_initialized = False
-    st.session_state.server_thread = None
-    st.session_state.resource_client = None
+class VectorStoreManager:
+    def __init__(self):
+        self.server = None
+        self.client = None
+        self.server_thread = None
+        self.is_running = False
+        self.setup_vector_store()
 
-# Function to check if port is in use
-def is_port_in_use(port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind(('127.0.0.1', port))
-            return False
-        except OSError:
-            return True
-
-# Function to initialize server
-def initialize_server():
-    if not st.session_state.server_initialized:
-        # Your existing imports and setup code here
-        from pathway.xpacks.llm.embedders import GeminiEmbedder
-        from pathway.xpacks.llm.splitters import TokenCountSplitter
-        from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
-        from pathway.xpacks.llm.parsers import ParseUnstructured
-
+    def setup_vector_store(self):
         text_splitter = TokenCountSplitter()
         embedder = GeminiEmbedder(api_key=GEMINI_API_KEY)
         parser = ParseUnstructured(mode='single', post_processors=[preprocessed_text])
@@ -205,91 +165,95 @@ def initialize_server():
             )
             reference_sources.append(table)
 
-        # Find an available port
-        port = 8000
-        while is_port_in_use(port):
-            port += 1
-
-        vector_server = VectorStoreServer(
+        self.server = VectorStoreServer(
             *reference_sources,
             parser=parser,
             embedder=embedder,
             splitter=text_splitter,
         )
 
-        def run_vector_server():
-            vector_server.run_server(host="127.0.0.1", port=port)
+    def start_server(self):
+        if not self.is_running:
+            self.server_thread = threading.Thread(target=self._run_server)
+            self.server_thread.daemon = True
+            self.server_thread.start()
+            time.sleep(2)  # Wait for server to start
+            self.client = VectorStoreClient(host="127.0.0.1", port=8000, timeout=30)
+            self.is_running = True
 
-        # Start server in a thread if not already running
-        if st.session_state.server_thread is None or not st.session_state.server_thread.is_alive():
-            st.session_state.server_thread = threading.Thread(target=run_vector_server)
-            st.session_state.server_thread.daemon = True  # Make thread daemon so it exits when main thread exits
-            st.session_state.server_thread.start()
-            
-            # Wait for server to start
-            time.sleep(2)
-            
-            # Initialize client
-            st.session_state.resource_client = VectorStoreClient(host="127.0.0.1", port=port)
-            st.session_state.server_initialized = True
+    def _run_server(self):
+        self.server.run_server(host="127.0.0.1", port=8000)
 
-# Initialize server at startup
-initialize_server()
+    def restart_server(self):
+        self.is_running = False
+        time.sleep(1)
+        self.setup_vector_store()
+        self.start_server()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def query(self, text):
+        try:
+            return self.client.query(query=[text], k=1)
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+            self.restart_server()
+            return self.client.query(query=[text], k=1)
 
+# Initialize vector store manager
+vector_store_manager = VectorStoreManager()
+vector_store_manager.start_server()
 
+# Modified classification functions
 def classify_paper(paper_text, conferences, genai_model):
-    if st.session_state.resource_client is None:
-        return "Server not initialized", "Please try again."
+    try:
+        result = vector_store_manager.query(paper_text)
         
-    result = st.session_state.resource_client.query(query=[paper_text], k=1)
-    if not result:
-        return "Could not classify the paper.", ""
+        if not result:
+            return "Could not classify the paper.", ""
 
-    closest_match = result[0]
-    metadata = closest_match["metadata"]
-    # classification = metadata["conference"]
-    # # Extract relevant passage
-    relevant_passages = closest_match["text"]
-    passage_oneline = " ".join(relevant_passages).replace("\n", " ")
+        closest_match = result[0]
+        metadata = closest_match["metadata"]
+        relevant_passages = closest_match["text"]
+        passage_oneline = " ".join(relevant_passages).replace("\n", " ")
 
-    # Generate classification and rationale
-    prompt = (
-        f"Classify the following paper into one of these conferences: {', '.join(conferences)}.\n"
-        f"Paper Content (trimmed): {paper_text}...\n"
-        f"Relevant Passage: {passage_oneline}\n"
-        f"Provide the closest match classification from the listed conferences. The classification must not be 'None of the above'\n"
-        f"Additionally, provide a separate rationale for the classification (not more than 100 words). Start your rationale with 'Rationale:'."
-)
+        prompt = (
+            f"Classify the following paper into one of these conferences: {', '.join(conferences)}.\n"
+            f"Paper Content (trimmed): {paper_text}...\n"
+            f"Relevant Passage: {passage_oneline}\n"
+            f"Provide the closest match classification from the listed conferences. The classification must not be 'None of the above'\n"
+            f"Additionally, provide a separate rationale for the classification (not more than 100 words). Start your rationale with 'Rationale:'."
+        )
 
+        response = genai_model.generate_content(prompt).parts[0].text
 
-    response = genai_model.generate_content(prompt).parts[0].text
+        if "Rationale:" in response:
+            classification, rationale = response.split("Rationale:", maxsplit=1)
+            classification = classification.replace("**Classification:**", "").replace("**","").strip()
+            rationale = rationale.replace("**", "").strip()
+        else:
+            classification = response.strip()
+            rationale = "Rationale not provided."
 
-    # Split response into classification and rationale
-    if "Rationale:" in response:
-        classification, rationale = response.split("Rationale:", maxsplit=1)
-        classification = classification.replace("**Classification:**", "").replace("**","").strip()
-        rationale = rationale.replace("**", "").strip()
-    else:
-        classification = response.strip()
-        rationale = "Rationale not provided."
-
-    return classification, rationale
-
-
-genai.configure(api_key=GEMINI_API_KEY)
-
-genai_model = genai.GenerativeModel("gemini-1.5-pro")
+        return classification, rationale
+    except Exception as e:
+        st.error(f"Error during classification: {str(e)}")
+        return "Classification failed", "An error occurred during the classification process."
 
 def classify_rationale(paper_path):
     if not os.path.exists(paper_path) or not paper_path.endswith(".pdf"):
-        print("Invalid file. Please try again.")
+        return "Invalid file", "Please upload a valid PDF file."
     
-    with open(paper_path, "rb") as file:
-        pdf_reader = PdfReader(file)
-        paper_text = " ".join(page.extract_text() for page in pdf_reader.pages)
-        classification, rationale = classify_paper(paper_text, list(conference_folders.keys()), genai_model)
-    return classification,rationale
+    try:
+        with open(paper_path, "rb") as file:
+            pdf_reader = PdfReader(file)
+            paper_text = " ".join(page.extract_text() for page in pdf_reader.pages)
+            return classify_paper(paper_text, list(conference_folders.keys()), genai_model)
+    except Exception as e:
+        st.error(f"Error processing PDF: {str(e)}")
+        return "Processing failed", "An error occurred while processing the PDF file."
+
+# Initialize Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+genai_model = genai.GenerativeModel("gemini-1.5-pro")
 
 #------------------------------------------------------------------------------------------------------
 
@@ -451,4 +415,3 @@ st.sidebar.markdown(
     - Machine Learning for classification.
     """
 )
-#------------------------------------------------------------------------------------------
