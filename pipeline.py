@@ -224,7 +224,9 @@ def run_vector_server():
     vector_server.run_server(host="127.0.0.1", port=8000)
 
 vector_server_thread = threading.Thread(target=run_vector_server)
+vector_server_thread.daemon=True
 vector_server_thread.start()
+time.sleep(5)
 resource_client= VectorStoreClient(host="127.0.0.1", port=8000)
 # # Run vector server and handle graceful termination
 # if __name__ == "__main__":
