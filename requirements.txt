@@ -10,3 +10,4 @@ google-api-core
 streamlit
 openai
 pathway[xpack-llm]
+pathway[xpack-llm-docs]
