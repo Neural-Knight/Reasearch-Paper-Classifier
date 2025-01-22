@@ -33,6 +33,8 @@ import threading
 import logging
 import warnings
 from tenacity import retry, stop_after_attempt, wait_exponential
+from dotenv import load_dotenv
+from model import voting_clf,preprocessed_text,cv
 
 # Suppress logs from specific libraries
 logging.getLogger('pathway_engine').setLevel(logging.WARNING)
@@ -41,99 +43,8 @@ logging.getLogger('root').setLevel(logging.WARNING)
 logging.getLogger('requests').setLevel(logging.WARNING)
 logging.basicConfig(level=logging.WARNING)
 
-GEMINI_API_KEY = "AIzaSyBsjjQRqoo40I6pxLHJ4zpukOt5e1lg8C0"
-
-# Environment setup
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-nltk_data_path = os.path.expanduser('~/nltk_data')
-if not os.path.exists(nltk_data_path):
-    nltk.download('stopwords')
-    nltk.download('wordnet')
-    nltk.download('omw-1.4')
-exclude = string.punctuation
-lemmatizer = WordNetLemmatizer()
-
-
-# Function Definitions (Text extraction, cleaning, etc.)
-def text_extractor_from_pdf(pdf_path):
-    reader = PdfReader(pdf_path)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text()
-    return text
-
-def lemmatize_words(text):
-    return " ".join([lemmatizer.lemmatize(word) for word in text.split()])
-
-def remove_stopwords(text):
-    new_text = []
-    for word in text.split():
-        if word in stopwords.words('english'):
-            new_text.append('')
-        else:
-            new_text.append(word)
-    x = new_text[:]
-    new_text.clear()
-    return " ".join(x)
-
-def preprocessed_text(text):
-    text = text.lower()  # Lowercase Conversion
-    text = re.sub(r'<.*?>', '', text)  # Removing html tags
-    text = re.sub(r'https?://\S+|www\.\S+', '', text)  # Removing URLs
-    text = text.translate(str.maketrans('', '', exclude))  # Removing punctuations
-    text = remove_stopwords(text)  # Removing stop words
-    text = lemmatize_words(text)  # Lemmatizing
-    return text
-
-# Reading PDFs and preprocessing
-non_publishable_folder = 'Reference/Non-Publishable/'
-non_publishable_texts = []
-for file in os.listdir(non_publishable_folder):
-    if file.endswith('.pdf'):
-        pdf_path = os.path.join(non_publishable_folder, file)
-        non_publishable_texts.append(preprocessed_text(text_extractor_from_pdf(pdf_path)))
-
-publishable_folder = ['Reference/Publishable/CVPR/', 'Reference/Publishable/EMNLP/', 'Reference/Publishable/KDD/', 'Reference/Publishable/NeurIPS/', 'Reference/Publishable/TMLR/']
-publishable_texts = []
-for folder in publishable_folder:
-    for file in os.listdir(folder):
-        if file.endswith('.pdf'):
-            pdf_path = os.path.join(folder, file)
-            publishable_texts.append(preprocessed_text(text_extractor_from_pdf(pdf_path)))
-
-# Data Preparation
-data = {
-    "Text": publishable_texts + non_publishable_texts,
-    "Publishable": [1] * len(publishable_texts) + [0] * len(non_publishable_texts)
-}
-df = pd.DataFrame(data)
-df = df.sample(frac=1, random_state=42).reset_index(drop=True)
-df_publishable = df[df['Publishable'] == 1]
-df_non_publishable = df[df['Publishable'] == 0]
-
-df_publishable_downsampled = df_publishable.sample(df_non_publishable.shape[0], random_state=42)
-df_balanced = pd.concat([df_publishable_downsampled, df_non_publishable])
-df_balanced = df_balanced.sample(frac=1, random_state=42).reset_index(drop=True)
-
-X = df_balanced.iloc[:, 0:1]
-y = df_balanced['Publishable'].to_numpy(dtype=np.int32)
-X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=1)
-cv = CountVectorizer()
-X_train_bow = cv.fit_transform(X_train['Text']).toarray()
-X_test_bow = cv.transform(X_test['Text']).toarray()
-
-# Training classifiers
-gnb = GaussianNB()
-gnb.fit(X_train_bow, y_train)
-
-clf = LogisticRegression(random_state=42)
-clf.fit(X_train_bow, y_train)
-
-svm = SVC(kernel='linear', random_state=42)
-svm.fit(X_train_bow, y_train)
-
-voting_clf = VotingClassifier(estimators=[('gnb', gnb), ('lr', clf), ('svm', svm)], voting='hard')
-voting_clf.fit(X_train_bow, y_train)
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 conference_folders = {
     "CVPR": r"Reference/Publishable/CVPR",
